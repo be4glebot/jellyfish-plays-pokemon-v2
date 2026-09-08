@@ -1,0 +1,16 @@
+{
+  "name": "jellyfish-overlay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Transparent, click-through, always-on-top grid/HUD overlay that auto-follows a separate window playing the raw YouTube stream at full native fps.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
