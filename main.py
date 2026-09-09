@@ -134,11 +134,25 @@ def main():
             # indefinitely, long after detection has genuinely stopped
             # (confirmed live: 8 consecutive B presses over 18s while
             # tracker.state.locked was False the whole time and zero
-            # candidates were being found in any frame). Only feed a
-            # currently-locked centroid into the decision; shared_state
-            # below still gets the raw (possibly stale) one for display.
+            # candidates were being found in any frame).
+            #
+            # Gating on tracker.state.locked alone isn't tight enough,
+            # though: it stays True for up to TRACK_MAX_LOST_FRAMES (15)
+            # frames after a real candidate was last actually found, using
+            # the same frozen position that whole grace window. With
+            # DEBOUNCE_FRAMES now as low as 3, a brief few-frame detection
+            # gap (common -- confirmed live that even a clearly-visible bell
+            # doesn't qualify on every single frame) is enough to satisfy
+            # debounce entirely off a stale position, firing on wherever the
+            # jellyfish *was* -- which can look like empty water if it's
+            # since moved or the camera panned, while a different jellyfish
+            # is clearly visible elsewhere. Gate on chosen instead: only
+            # non-None on frames where a real candidate was actually matched
+            # this exact frame, a strict subset of state.locked that closes
+            # this gap. shared_state below still gets the raw (possibly
+            # stale) centroid for display.
             decision = zone_mapper.decide(
-                centroid if tracker.state.locked else None,
+                centroid if chosen is not None else None,
                 roi_w, roi_h, seconds_since_qualifying, now,
             )
 
@@ -147,7 +161,9 @@ def main():
                 shared_state.record_input(decision["button"], decision["source"], decision["zone"])
 
             if decision["force_rotate"]:
-                switched, old_centroid, new_centroid = tracker.force_rotate(now)
+                switched, old_centroid, new_centroid = tracker.force_rotate(
+                    now, roi_w, roi_h, decision["zone"],
+                )
                 zone_mapper.notify_rotation_outcome(switched)
                 if switched:
                     shared_state.record_rotation(

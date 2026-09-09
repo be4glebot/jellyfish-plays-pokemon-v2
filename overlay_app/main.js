@@ -28,6 +28,15 @@
 // Keep VIDEO_ID in sync with config.py's STREAM_URL.
 // Keep DASHBOARD_URL in sync with config.py's DASHBOARD_HOST/DASHBOARD_PORT
 // (main.py must already be running for /overlay to load).
+//
+// If the video window is closed entirely (not just minimized/backgrounded
+// -- watch_window.ps1 distinguishes these, reporting "CLOSED" only for the
+// former), main.js relaunches a fresh one and reconnects CDP automatically,
+// so there's always a tracked instance running even if it's accidentally
+// closed. This is also why a manually-opened, separate YouTube tab in your
+// everyday browser profile can't be picked up by the overlay -- it isn't
+// the dedicated, --remote-debugging-port-enabled instance this relies on;
+// closing it (if you opened one) just triggers the same auto-relaunch.
 
 const { app, BrowserWindow, screen } = require("electron");
 const { spawn } = require("child_process");
@@ -142,6 +151,16 @@ function startWindowWatcher() {
     buffered = lines.pop(); // keep the last, possibly-incomplete line for next time
     for (const line of lines) {
       if (!line.trim()) continue;
+      if (line === "CLOSED") {
+        videoWindowVisible = false;
+        latestWindowRectPhysical = null;
+        if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide();
+        stopVideoTracking();
+        console.log("Video window closed -- relaunching...");
+        launchVideoWindow();
+        startVideoTracking().catch((e) => console.error("video tracking restart failed:", e.message));
+        continue;
+      }
       if (line === "HIDDEN") {
         videoWindowVisible = false;
         if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide();
@@ -288,10 +307,30 @@ async function connectCdpWithRetry(retries = 60, delayMs = 500) {
   throw new Error("Could not attach to the YouTube tab via CDP after retrying");
 }
 
-async function startVideoTracking() {
-  const cdp = await connectCdpWithRetry();
+let videoTrackingInterval = null;
+let currentCdpClient = null;
 
-  setInterval(async () => {
+function stopVideoTracking() {
+  if (videoTrackingInterval) {
+    clearInterval(videoTrackingInterval);
+    videoTrackingInterval = null;
+  }
+  if (currentCdpClient) {
+    try {
+      currentCdpClient.ws.close();
+    } catch (e) {
+      // already closed -- fine
+    }
+    currentCdpClient = null;
+  }
+}
+
+async function startVideoTracking() {
+  stopVideoTracking(); // in case this is a reconnect after the video window was relaunched
+  const cdp = await connectCdpWithRetry();
+  currentCdpClient = cdp;
+
+  videoTrackingInterval = setInterval(async () => {
     if (!latestWindowRectPhysical || !videoWindowVisible) return;
     try {
       const result = await cdp.send("Runtime.evaluate", {

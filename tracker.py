@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 
 import config
+import zone_mapper
 
 log = logging.getLogger(__name__)
 
@@ -279,22 +280,32 @@ class JellyfishTracker:
                 best_dist = dist
         return best
 
-    def force_rotate(self, now: float):
+    def force_rotate(self, now: float, roi_width: int, roi_height: int, exclude_zone):
         """Force-drop the current lock and re-acquire a different
         qualifying candidate from the most recently detected frame,
         excluding anything within config.FORCED_ROTATION_MIN_DISTANCE of
-        the current lock's centroid. Called by main.py when the same
-        input has fired config.REPEAT_INPUT_ROTATION_THRESHOLD times in a
-        row, so one still, camera-facing jellyfish can't monopolize every
-        input forever -- a separate trigger from (and doesn't touch) the
-        normal lost-track re-acquisition path above.
+        the current lock's centroid *and* anything that maps to the same
+        exclude_zone (the zone that triggered this rotation). Called by
+        main.py when the same input has fired
+        config.REPEAT_INPUT_ROTATION_THRESHOLD times in a row, so one
+        still, camera-facing jellyfish can't monopolize every input
+        forever -- a separate trigger from (and doesn't touch) the normal
+        lost-track re-acquisition path above.
+
+        The zone check matters because zones are non-uniformly sized (see
+        config.GRID_COL_FRACTIONS/GRID_ROW_FRACTIONS_BY_COL) -- confirmed
+        live that a distance-only check let this "rotate" onto a different
+        physical jellyfish that still sat inside the same large zone, so
+        the exact same button kept firing well past the threshold. Requiring
+        a genuinely different zone (not just a different jellyfish) is what
+        actually fixes that.
 
         Returns (switched: bool, old_centroid, new_centroid_or_None).
         switched is False, with the existing lock left untouched, if not
-        currently locked or if no other qualifying candidate exists in the
-        current frame (e.g. only one jellyfish is facing the camera right
-        now) -- callers should treat that as "try again next fire", not an
-        error.
+        currently locked or if no other qualifying candidate in a different
+        zone exists in the current frame (e.g. only one zone has a
+        camera-facing jellyfish right now) -- callers should treat that as
+        "try again next fire", not an error.
         """
         state = self.state
         if not state.locked or state.raw_centroid is None:
@@ -302,10 +313,15 @@ class JellyfishTracker:
 
         old_centroid = state.raw_centroid
         ox, oy = old_centroid
-        alternatives = [
-            c for c in self._last_candidates
-            if math.hypot(c.centroid[0] - ox, c.centroid[1] - oy) >= config.FORCED_ROTATION_MIN_DISTANCE
-        ]
+        alternatives = []
+        for c in self._last_candidates:
+            if math.hypot(c.centroid[0] - ox, c.centroid[1] - oy) < config.FORCED_ROTATION_MIN_DISTANCE:
+                continue
+            if exclude_zone is not None:
+                c_zone = zone_mapper.centroid_to_zone(c.centroid, roi_width, roi_height)
+                if c_zone == exclude_zone:
+                    continue
+            alternatives.append(c)
         if not alternatives:
             return False, old_centroid, None
 

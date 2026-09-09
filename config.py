@@ -285,23 +285,29 @@ GRID_BUTTON_MAP = {
 # overlay so it honestly reflects actual trigger-area size, not just a
 # cosmetic tic-tac-toe grid.
 #
-# Values below are a starting point tuned against real observed session
-# counts (A=42, B=30, START=27, UP=18, RIGHT=17, R=9, DOWN=4, LEFT=3):
-# START shrunk hard (was drastically over-firing relative to its gameplay
-# value -- it just opens the main menu), R shrunk too (confirmed unused in
-# FireRed, see GRID_BUTTON_MAP comment above -- no reason to give it much
-# area), SELECT trimmed similarly (only useful once an item is registered).
-# LEFT and DOWN -- the two most under-firing movement buttons -- get the
-# biggest boosts; UP/RIGHT dip slightly to make room since they were
-# already firing at a reasonable rate; A dips slightly too but stays large
-# since interacting/confirming matters. Re-tune from /status's live
-# "inputs by button" breakdown after running for a while -- these numbers
-# don't need to be exact, just a reasonable starting bias.
-GRID_COL_FRACTIONS = [0.36, 0.34, 0.30]  # col 0 (B/LEFT/SELECT), col 1 (UP/A/DOWN), col 2 (START/RIGHT/R)
+# Re-tuned against a later, larger observed session (LEFT=131, RIGHT=100,
+# DOWN=98, B=66, A=52, UP=37, R=30, START=16, SELECT=11) with two explicit
+# goals this time: the four directionals should fire roughly equally often
+# (UP was badly under-firing at 37 vs LEFT's 131 -- a >3x spread despite
+# UP's zone not being dramatically smaller), and A should clearly lead
+# every other button (it's the confirm/interact button -- the most
+# important one -- but was firing *less* than B, a minor button).
+#
+# Method: divide each button's observed count by its old area to get a
+# rough "attractiveness per unit area" for that screen region (jellyfish
+# apparently favor the LEFT/DOWN regions of this tank well beyond what
+# their old zone size alone explains), then size the new zones so equal
+# attractiveness-adjusted area gives roughly equal (for the directionals)
+# or boosted (for A) predicted counts. Blended partway toward the
+# old area rather than solving for exact equality, since a single
+# session's counts are noisy, especially for the low-count minor
+# buttons -- re-tune again from /status's live breakdown after running a
+# while, same as before.
+GRID_COL_FRACTIONS = [0.23, 0.54, 0.23]  # col 0 (B/LEFT/SELECT), col 1 (UP/A/DOWN), col 2 (START/RIGHT/R)
 GRID_ROW_FRACTIONS_BY_COL = [
-    [0.34, 0.46, 0.20],  # col 0: B, LEFT, SELECT
-    [0.28, 0.30, 0.42],  # col 1: UP, A, DOWN
-    [0.14, 0.62, 0.24],  # col 2: START, RIGHT, R
+    [0.28, 0.56, 0.16],  # col 0: B, LEFT, SELECT
+    [0.37, 0.38, 0.25],  # col 1: UP, A, DOWN
+    [0.10, 0.73, 0.17],  # col 2: START, RIGHT, R
 ]
 
 # Number of consecutive frames the smoothed centroid must stay in the same
@@ -317,12 +323,11 @@ GRID_ROW_FRACTIONS_BY_COL = [
 # jellyfish were being detected correctly the whole time, they just kept
 # getting bounced to a new lock before 12 frames could ever complete,
 # producing 15-20s+ gaps with no input despite continuous, correct
-# detection. Settled on 4 (~2s) as a middle ground for faster response
-# without being as prone to firing on a single noisy/transient frame as an
-# even shorter hold would be -- if it still causes spurious inputs, raise
-# this back up rather than trying to fix it via MIN_CIRCULARITY/
-# MIN_SOLIDITY (those are about bell shape, not dwell time).
-DEBOUNCE_FRAMES = 4
+# detection. Lowered to 3 (~1.5s) for faster response -- if it starts
+# causing spurious inputs from single noisy/transient frames, raise this
+# back up rather than trying to fix it via MIN_CIRCULARITY/MIN_SOLIDITY
+# (those are about bell shape, not dwell time).
+DEBOUNCE_FRAMES = 3
 
 # Minimum seconds between fired inputs.
 INPUT_COOLDOWN_SEC = 0.1
@@ -337,7 +342,7 @@ INPUT_COOLDOWN_SEC = 0.1
 # input actually fires (never on every frame -- debounce/cooldown above are
 # unaffected). See ZoneMapper._consecutive_repeat_count / tracker.py's
 # force_rotate().
-REPEAT_INPUT_ROTATION_THRESHOLD = 8
+REPEAT_INPUT_ROTATION_THRESHOLD = 7
 
 
 # --------------------------------------------------------------------------

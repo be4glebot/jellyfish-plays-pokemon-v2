@@ -5,12 +5,16 @@
 # glued to it without the video window needing to stay at a fixed position
 # or size. Runs until killed; never exits on its own.
 #
-# Reports the line "HIDDEN" instead whenever the video window is minimized,
-# not the foreground (focused/on-top) window -- e.g. alt-tabbed away from,
-# or simply covered by another window that was clicked to the front -- or
-# not found at all (closed). main.js hides the overlay in that case instead
-# of leaving it floating over whatever's actually on screen at the
-# last-known position.
+# Reports "HIDDEN" instead whenever the video window is minimized, not the
+# foreground (focused/on-top) window -- e.g. alt-tabbed away from, or simply
+# covered by another window that was clicked to the front. main.js hides the
+# overlay in that case instead of leaving it floating over whatever's
+# actually on screen at the last-known position.
+#
+# Reports "CLOSED" instead whenever the window isn't found at all (the
+# process is gone, not just minimized/backgrounded) -- main.js relaunches a
+# fresh video window in that case, so the tracked instance effectively stays
+# running in the background even if it's accidentally closed.
 #
 # Chrome spawns several child processes (GPU, renderer, ...) that all
 # inherit the same command line, and only one of them owns the actual
@@ -58,16 +62,17 @@ function Find-VideoWindowHandle {
 $lastLine = $null
 while ($true) {
     $hwnd = Find-VideoWindowHandle
-    $line = "HIDDEN"
-    if ($hwnd -ne [IntPtr]::Zero -and $hwnd -eq [WinRect]::GetForegroundWindow() `
+    if ($hwnd -eq [IntPtr]::Zero) {
+        $line = "CLOSED"
+    } elseif ($hwnd -eq [WinRect]::GetForegroundWindow() `
         -and -not [WinRect]::IsIconic($hwnd) -and [WinRect]::IsWindowVisible($hwnd)) {
         $rect = New-Object RECT
         [WinRect]::GetWindowRect($hwnd, [ref]$rect) | Out-Null
         $w = $rect.Right - $rect.Left
         $h = $rect.Bottom - $rect.Top
-        if ($w -gt 0 -and $h -gt 0) {
-            $line = "$($rect.Left),$($rect.Top),$w,$h"
-        }
+        $line = if ($w -gt 0 -and $h -gt 0) { "$($rect.Left),$($rect.Top),$w,$h" } else { "HIDDEN" }
+    } else {
+        $line = "HIDDEN"
     }
     if ($line -ne $lastLine) {
         Write-Output $line
