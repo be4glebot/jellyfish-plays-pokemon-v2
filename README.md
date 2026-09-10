@@ -15,11 +15,25 @@ YouTube livestream --> yt-dlp/OpenCV capture --> background subtraction
   --> emu:addKey()/emu:clearKey() --> Pokemon FireRed
 ```
 
-Two processes:
+Three pieces:
 1. **Python** (`main.py` + friends) - stream capture, CV tracking, zone
-   decisions, TCP server, and the dashboard.
+   decisions, TCP server, and the dashboard (Flask, serving `/`, `/overlay`,
+   and `/status`).
 2. **mGBA Lua script** (`mgba_scripts/bridge.lua`) - thin TCP client running
    inside mGBA that applies received button commands.
+3. **`overlay_app/`** (Electron, optional but recommended for actually
+   watching the stream) - see "Live overlay & stats window" below. This is
+   a separate visual layer with no bearing on tracking/input decisions;
+   Python's own capture pipeline (above) is what drives the game
+   regardless of whether this is running.
+
+Note the split: the Python pipeline pulls its own copy of the stream
+directly from the network (for CV tracking, deliberately paced slower than
+real-time to survive this stream's frequent stalls -- see
+`config.PLAYBACK_INTERVAL_SEC`), which is *not* the same video a human
+would want to watch. `overlay_app/` exists so you can watch the stream at
+full native smoothness in a real browser tab while a transparent overlay
+tracks it independently.
 
 ## Setup
 
@@ -89,22 +103,66 @@ capture, and stops all threads cleanly.
 
 ### 6. Open the dashboard
 
-There are two pages, sharing the same underlying tracking state:
+There are three pages, all sharing the same underlying tracking state:
 
-- **`http://localhost:8000`** - the primary stream overlay: the live
-  tracked video with a 3x3 button grid composited on top of it (arrows for
-  movement, A/B badges, START/SELECT pills, a muted R label), styled after
-  the classic "Fish Plays Pokemon" look. The cell the jellyfish is
-  currently drifting into glows in proportion to debounce progress, so a
-  decision visibly "builds" before it fires. This is the one to add as an
-  OBS **Browser Source** (default size 1280x720, configurable in
-  `config.py`) - it's meant to be the primary visual for the stream. It
-  also has a small "stream info" link to the status page.
+- **`http://localhost:8000`** - the original all-in-one stream overlay: the
+  live *internally-captured* video (the same throttled feed the CV
+  pipeline uses, not full native fps) with a 3x3 button grid composited on
+  top, styled after the classic "Fish Plays Pokemon" look. Still useful as
+  an OBS **Browser Source** (default size 1280x720, configurable in
+  `config.py`) if you specifically want the tracking feed baked into a
+  stream output. For your own local viewing, prefer `overlay_app/` below
+  instead -- it decouples the video (full native fps, a real YouTube tab)
+  from the overlay, whereas this page is capped at the CV pipeline's frame
+  rate (~2fps against this particular stream, see `PLAYBACK_INTERVAL_SEC`).
+- **`http://localhost:8000/overlay`** - a transparent-background version of
+  the same grid/HUD, meant to be embedded in a real browser window or
+  composited by something else rather than viewed directly as a full page
+  (no video `<img>` on this one). This is what `overlay_app/` loads into
+  its transparent Electron window.
 - **`http://localhost:8000/status`** - operational details: exact
   centroid/zone/debounce state, connection health (stream + mGBA), recent
-  errors, session stats (uptime, total inputs, per-button breakdown,
-  auto-idle activation count), and the scrolling input log. This is for
-  you, not for the stream visual.
+  errors + forced-rotation events, session stats (uptime, total inputs,
+  per-button breakdown, auto-idle activation count), and the scrolling
+  input log. `overlay_app/` also opens this in its own dedicated window.
+
+## Live overlay & stats window (optional, recommended)
+
+`overlay_app/` is a small Electron app that gives you a much better local
+viewing setup than OBS-browser-sourcing `/` directly:
+
+1. It opens the actual YouTube stream in a normal, full-fps browser tab
+   (a dedicated Chrome/Edge profile, isolated from your everyday browsing) --
+   real native playback smoothness, untouched by the CV pipeline's frame
+   pacing.
+2. It opens a transparent, frameless, click-through, always-on-top window
+   showing `/overlay` (the grid + HUD), and keeps it glued exactly to the
+   video tab's on-screen position via the Chrome DevTools Protocol -- it
+   tracks the actual `<video>` element's rect, not just the window bounds,
+   so it stays aligned even as the tab's layout changes (theater mode,
+   resizing, etc). It automatically hides when the video tab isn't the
+   focused window, and automatically relaunches the video tab if you
+   accidentally close it entirely.
+3. It opens `/status` in its own normal, resizable window ("Jellyfish
+   Stats") docked to a corner.
+
+Setup (one-time):
+
+```
+cd overlay_app
+npm install
+```
+
+To run (with `main.py` already running):
+
+```
+cd overlay_app
+npm start
+```
+
+This is Windows-only (it relies on Win32 calls to track window position --
+see `overlay_app/watch_window.ps1`) and requires Chrome or Edge installed
+in a standard location.
 
 ## Multi-monitor note
 
@@ -112,8 +170,11 @@ The jellyfish stream is expected to be fullscreened on one monitor with
 mGBA on a separate screen (e.g., a laptop display). Because the Python side
 pulls the stream directly from its network URL via `yt-dlp`/OpenCV rather
 than capturing your screen, physical window/monitor arrangement doesn't
-affect the capture pipeline at all -- no window-selection or screen-capture
-setup is needed.
+affect the *capture/tracking* pipeline at all -- no window-selection or
+screen-capture setup is needed there. `overlay_app/`'s windows (if you use
+it) do care about arrangement, but position themselves automatically: the
+transparent overlay always follows wherever the video tab actually is, on
+whichever monitor.
 
 ## Tuning CV thresholds
 
@@ -131,7 +192,7 @@ you'll want to touch them:
    bells aren't being detected, or the mask is picking up
    background/tentacles, sample actual pixel colors from a screenshot of
    the stream and widen or shift these ranges.
-3. **`MORPH_OPEN_KERNEL_SIZE` / `MORPH_OPEN_ITERATIONS`** (default 25px /
+3. **`MORPH_OPEN_KERNEL_SIZE` / `MORPH_OPEN_ITERATIONS`** (default 17px /
    3 iterations) - this is the most impactful knob in practice. It's
    applied to the color mask to sever thin tentacle strands from the round
    bell core before contour extraction; too small and a bell's contour
@@ -140,7 +201,10 @@ you'll want to touch them:
    clearly visible. Raise it if bells still aren't isolating cleanly at
    high zoom/resolution; lower it (a real bell candidate needs to survive
    the erosion) if a genuinely large, close bell is getting eroded away to
-   nothing.
+   nothing -- confirmed live that too large a value (the original default
+   here was 25px) can erode away legitimate bells entirely on some frames,
+   not just tentacles, producing zero candidates despite several clearly
+   visible bells.
    - Note: background subtraction (`MOG2_VAR_THRESHOLD`, `MOG2_HISTORY`)
      is *not* a hard requirement for detection -- it only contributes a
      motion-overlap scoring bonus (`SCORE_WEIGHT_MOTION`). An earlier
@@ -166,7 +230,46 @@ you'll want to touch them:
 7. **Grid -> button mapping** (`GRID_BUTTON_MAP`) - if START/SELECT (the
    corner zones) prove hard for a jellyfish to reliably hit, just remap
    which zone maps to which button; the whole grid is one config dict, and
-   the primary page's icons/badges follow the mapping automatically.
+   the overlay's icons/badges follow the mapping automatically.
+8. **Non-uniform zone sizing** (`GRID_COL_FRACTIONS`,
+   `GRID_ROW_FRACTIONS_BY_COL`) - the 3x3 grid isn't cosmetic equal thirds;
+   each button's actual "hit area" is independently sized, since a bigger
+   zone gets landed in (and fires) more often. Re-tune this from
+   `/status`'s live "inputs by button" breakdown: divide each button's
+   observed count by its current zone area to see roughly how
+   "attractive" that part of the tank is per unit area (some regions get
+   visited far more than others, independent of zone size), then resize
+   zones so the buttons you care about get closer to the firing rate you
+   want. Both fraction lists tile the ROI exactly (column widths sum to
+   1.0; within each column, row heights sum to 1.0), so any change to one
+   zone's size necessarily affects its neighbors in the same
+   row/column -- expect to touch several values together, not just one.
+9. **Repeat-input rotation** (`REPEAT_INPUT_ROTATION_THRESHOLD`,
+   `FORCED_ROTATION_MIN_DISTANCE`) - if one still, camera-facing jellyfish
+   locks in and fires the same button over and over, `tracker.force_rotate()`
+   forces a switch to a different qualifying candidate after N consecutive
+   identical inputs (default 7). It requires the new candidate to be both
+   far enough away (`FORCED_ROTATION_MIN_DISTANCE`, default 150px) *and* in
+   a genuinely different zone than the one that triggered the rotation --
+   distance alone isn't enough, since zones are non-uniformly sized (see
+   point 8) and a different physical jellyfish can still sit in the same
+   large zone. Falls through gracefully (keeps the current lock, retries
+   next fire) if no such candidate exists that frame. Visible on `/status`
+   as a distinct "Forced rotations" event, separate from normal inputs.
+10. **Candidate scoring weights** (`SCORE_WEIGHT_CIRCULARITY`,
+    `SCORE_WEIGHT_SOLIDITY`, `SCORE_WEIGHT_AREA`, `SCORE_WEIGHT_MOTION`,
+    `SCORE_AREA_NORMALIZER_FRACTION`) - when multiple bells qualify in the
+    same frame, this decides which one gets locked onto. Shape
+    (circularity + solidity) should generally dominate so a large-but-messy
+    blob can't outrank a cleaner, rounder one; area is scored as a genuine
+    proportion of the ROI (`SCORE_AREA_NORMALIZER_FRACTION`, default 0.05 --
+    a bell covering >=5% of the frame gets full area credit) so it's not a
+    stale absolute pixel count that goes wrong if `ROI_WIDTH_FRACTION`/
+    `ROI_HEIGHT_FRACTION` change. Raise `SCORE_WEIGHT_AREA` to more
+    consistently prefer the closest/most prominent bell (also generally
+    easier to hold a stable lock on); raise
+    `SCORE_WEIGHT_CIRCULARITY`/`SCORE_WEIGHT_SOLIDITY` if a large blob that
+    isn't a clean bell shape is winning over a smaller, rounder one.
 
 To see exactly why a frame isn't producing a detection, set
 `LOG_LEVEL = "DEBUG"` in `config.py` and watch the console: every frame
@@ -201,6 +304,16 @@ the console (see the CV tuning section above).
 - Auto-idle fallback (fires when no jellyfish has qualified for an extended
   period, default 45s, then every 7s) presses **A only**.
 - 0.1s minimum cooldown between fired inputs.
+- An input only ever fires off a candidate actually matched *that exact
+  frame* -- `tracker.state.locked` alone isn't a tight enough gate, since
+  it deliberately stays true for a grace period (`TRACK_MAX_LOST_FRAMES`)
+  after the last real detection, using a frozen position for the debug
+  overlay's dot. Feeding that stale position into the input decision too
+  would fire on wherever a jellyfish *used to be* once it's moved on.
+- One jellyfish can't monopolize every input forever: after
+  `REPEAT_INPUT_ROTATION_THRESHOLD` consecutive identical inputs, the
+  tracker is forced to rotate its lock onto a different, currently-visible
+  candidate in a genuinely different zone (see tuning point 9 above).
 
 ## Project structure
 
@@ -212,10 +325,15 @@ jellyfish-plays-pokemon/
 ├── tracker.py           # background subtraction, color mask, contour scoring, tracking
 ├── zone_mapper.py        # grid mapping, debounce, rate limiting, auto-idle
 ├── tcp_server.py         # Python-side TCP server
-├── dashboard.py          # Flask overlay/dashboard
+├── dashboard.py          # Flask dashboard: "/", "/overlay", "/status"
 ├── main.py               # wires everything together
 ├── mgba_scripts/
 │   └── bridge.lua        # Lua script loaded into mGBA's Scripting console
+├── overlay_app/          # optional Electron app -- see "Live overlay & stats window"
+│   ├── main.js            # launches + positions the video tab, overlay, stats windows
+│   ├── watch_window.ps1   # Win32 window-position/visibility polling
+│   └── package.json
+├── launch_overlay.ps1    # legacy: opens "/" as a chromeless popup (see overlay_app/ instead)
 └── requirements.txt
 ```
 
